@@ -76,6 +76,8 @@ ADBG_CASE_DEFINE(regression, 1015, xtest_tee_test_1015,
 		"FS hash-tree corner cases");
 ADBG_CASE_DEFINE(regression, 1016, xtest_tee_test_1016,
 		"Test TA to TA transfers (in/out/inout memrefs on the stack)");
+ADBG_CASE_DEFINE(regression, 1017, xtest_tee_test_1017,
+		"Test Agent From TA to CA");
 
 struct xtest_crypto_session {
 	ADBG_Case_t *c;
@@ -1206,5 +1208,89 @@ static void xtest_tee_test_1016(ADBG_Case_t *c)
 		TEEC_InvokeCommand(&session, TA_OS_TEST_CMD_TA2TA_MEMREF, &op,
 				   &ret_orig));
 
+	TEEC_CloseSession(&session);
+}
+
+struct test_1504_thread_arg {
+	TEEC_Context *ctx;
+	ADBG_Case_t *case_t;
+	unsigned int agent_id;
+	void *buf;
+	unsigned int buf_len;
+};
+
+#define TEST_AGENT_ID  0xffff0010;
+#define TEST_AGENT_BUF_LEN	0x10003;
+
+static void *test_1017_thread(void *arg)
+{
+	struct test_1504_thread_arg *a = arg;
+	char *v;
+	unsigned int i;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(a->case_t, TEEC_AgentRecv(a->ctx,
+				a->agent_id, a->buf, a->buf_len)))
+		goto exit;
+
+	v = a->buf;
+	for (i = 0; i < a->buf_len; i++)
+		v[i] = v[i] + 1;
+
+	(void)ADBG_EXPECT_TEEC_SUCCESS(a->case_t, TEEC_AgentSend(a->ctx,
+				a->agent_id, a->buf, a->buf_len));
+exit:
+	return NULL;
+}
+
+static void xtest_tee_test_1017(ADBG_Case_t *c)
+{
+	TEEC_Session session = { 0 };
+	TEEC_Operation op = TEEC_OPERATION_INITIALIZER;
+	uint32_t ret_orig;
+	unsigned int agent_id = TEST_AGENT_ID;
+	void *buf;
+	unsigned int buf_len = TEST_AGENT_BUF_LEN;
+	pthread_t thr;
+	struct test_1504_thread_arg arg;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, xtest_teec_open_session(&session,
+				&agent_test_uuid, NULL,	&ret_orig)))
+		return;
+
+	if (!ADBG_EXPECT_TEEC_SUCCESS(c, TEEC_RegisterAgent(&xtest_teec_ctx,
+							    agent_id)))
+		goto exit1;
+
+	buf = malloc(buf_len);
+	if (!buf)
+		goto exit2;
+
+	arg.ctx = &xtest_teec_ctx;
+	arg.agent_id = agent_id;
+	arg.buf = buf;
+	arg.buf_len = buf_len;
+	arg.case_t = c;
+
+	if (!ADBG_EXPECT(c, 0, pthread_create(&thr, NULL, test_1504_thread,
+					      &arg)))
+		goto exit3;
+
+	op.params[0].value.a = agent_id;
+	op.params[0].value.b = buf_len;
+	op.paramTypes = TEEC_PARAM_TYPES(TEEC_VALUE_INOUT,
+					 TEEC_NONE, TEEC_NONE,
+					 TEEC_NONE);
+
+#define CMD_AGENT_TESTS 0
+	(void)ADBG_EXPECT_TEEC_SUCCESS(c, TEEC_InvokeCommand(
+				&session, CMD_AGENT_TESTS, &op, &ret_orig));
+
+	(void)ADBG_EXPECT(c, 0, pthread_join(thr, NULL));
+exit3:
+	free(buf);
+exit2:
+	(void)ADBG_EXPECT_TEEC_SUCCESS(c, TEEC_UnRegisterAgent(&xtest_teec_ctx,
+							  agent_id));
+exit1:
 	TEEC_CloseSession(&session);
 }
